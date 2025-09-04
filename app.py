@@ -93,16 +93,16 @@ if uploaded:
             merged['DATE'] = pd.Categorical(merged['DATE'])
             merged = merged.sort_values(['DATE','TIME','CODE']).reset_index(drop=True)
             st.success(f"✅ 병합 완료: 총 {len(merged):,}행")
-            bio = BytesIO()
+             bio = BytesIO()
             merged.to_excel(bio, index=False, engine='openpyxl')
-            bio.seek(0)
-            fn = f"merged_{datetime.now():%Y%m%d_%H%M%S}.xlsx"
+            data = bio.getvalue()           # ← pull raw bytes
             st.download_button(
-                "엑셀 다운로드", 
-                data=bio,
+                "엑셀 다운로드",
+                data=data,                   # ← pass raw bytes, not the BytesIO itself
                 file_name=fn,
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
+
         if errors:
             st.error("오류 발생:")
             for e in errors:
