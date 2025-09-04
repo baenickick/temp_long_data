@@ -37,7 +37,7 @@ def process_file(content):
     df['주중_or_주말'] = np.where(df['DATE'].dt.dayofweek>=5,'주말','주중')
     df['CODE'] = (pd.to_numeric(df['집계구코드'], errors='coerce')
                   .astype('Int64').astype(str))
-    result = pd.DataFrame({
+    return pd.DataFrame({
         'DATE': df['DATE'].dt.strftime('%Y-%m-%d'),
         '요일': df['요일'],
         '주중_or_주말': df['주중_or_주말'],
@@ -47,7 +47,6 @@ def process_file(content):
         'CHN': pd.to_numeric(df['중국인체류인구수'], errors='coerce'),
         'EXP_CHN': pd.to_numeric(df['중국외외국인체류인구수'], errors='coerce')
     }).dropna(subset=['DATE','TIME','CODE'])
-    return result
 
 # 1) 파일 업로드
 uploaded = st.file_uploader(
@@ -56,47 +55,43 @@ uploaded = st.file_uploader(
 )
 
 if uploaded:
-    # 2) 미리보기: 업로드된 파일 전체를 처리하지 않고, 병합 결과 상위 5행만 보여줌
+    # 업로드된 파일 목록 텍스트로 표시
+    st.subheader("업로드된 파일:")
+    for f in uploaded:
+        st.write("-", f.name)
+    
+    # 2) 병합 전 미리보기 (상위 5행)
     st.subheader("병합 후 미리보기 (상위 5행)")
-    try:
-        # 병렬로 각 파일 처리
-        with ThreadPoolExecutor(max_workers=4) as ex:
-            dfs = list(ex.map(lambda f: process_file(f.read()), uploaded))
-        merged_preview = pd.concat(dfs, ignore_index=True).drop_duplicates()
-        merged_preview['DATE'] = pd.Categorical(merged_preview['DATE'])
-        merged_preview = merged_preview.sort_values(['DATE','TIME','CODE'])
-        st.dataframe(merged_preview.head(5))
-    except Exception as e:
-        st.error(f"미리보기 처리 오류: {e}")
+    # 통합 처리 + 미리보기 진행률 표시
+    progress = st.progress(0)
+    dfs_preview = []
+    for i, f in enumerate(uploaded, start=1):
+        dfs_preview.append(process_file(f.read()))
+        progress.progress(i / len(uploaded))
+    merged_preview = pd.concat(dfs_preview, ignore_index=True).drop_duplicates()
+    merged_preview['DATE'] = pd.Categorical(merged_preview['DATE'])
+    merged_preview = merged_preview.sort_values(['DATE','TIME','CODE'])
+    st.dataframe(merged_preview.head(5))
 
     st.markdown("---")
     # 3) 전체 실행 버튼
     if st.button("전체 실행"):
+        st.subheader("전체 병합 진행")
         n = len(uploaded)
-        progress = st.progress(0)
+        progress_all = st.progress(0)
         dfs, errors = [], []
-        step = 0
-
-        with ThreadPoolExecutor(max_workers=4) as ex:
-            futures = {ex.submit(process_file, f.read()): f.name for f in uploaded}
-            for fut in as_completed(futures):
-                name = futures[fut]
-                try:
-                    df2 = fut.result()
-                    dfs.append(df2)
-                    st.write(f"✓ {name} 처리 완료 ({len(df2):,}행)")
-                except Exception as e:
-                    errors.append(f"{name}: {e}")
-                    st.write(f"✗ {name} 오류: {e}")
-                step += 1
-                progress.progress(step / n)
-
+        for i, f in enumerate(uploaded, start=1):
+            try:
+                df2 = process_file(f.read())
+                dfs.append(df2)
+            except Exception as e:
+                errors.append(f"{f.name}: {e}")
+            progress_all.progress(i / n)
         if dfs:
             merged = pd.concat(dfs, ignore_index=True).drop_duplicates()
             merged['DATE'] = pd.Categorical(merged['DATE'])
             merged = merged.sort_values(['DATE','TIME','CODE']).reset_index(drop=True)
             st.success(f"✅ 병합 완료: 총 {len(merged):,}행")
-            # 다운로드
             bio = BytesIO()
             merged.to_excel(bio, index=False, engine='openpyxl')
             bio.seek(0)
