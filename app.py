@@ -5,10 +5,9 @@ import numpy as np
 from io import BytesIO
 from datetime import datetime
 import io
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
 st.set_page_config(page_title="생활인구 데이터 병합", layout="wide")
-st.title("생활인구 CSV 파일 미리보기 & 병합")
+st.title("생활인구 CSV 병합 웹앱")
 
 def detect_delimiter(sample_bytes):
     s = sample_bytes[:2048].decode('utf-8', errors='ignore')
@@ -25,8 +24,8 @@ def process_file(content):
         except:
             continue
     df.columns = df.columns.str.strip().str.replace('"','').str.replace('?','')
-    req = ['기준일ID','시간대구분','집계구코드','총생활인구수',
-           '중국인체류인구수','중국외외국인체류인구수']
+    req = ['기준일ID','시간대구분','집계구코드',
+           '총생활인구수','중국인체류인구수','중국외외국인체류인구수']
     df = df[req].copy()
     df['DATE'] = pd.to_datetime(df['기준일ID'].astype(str),
                                 format='%Y%m%d', errors='coerce')
@@ -50,43 +49,45 @@ def process_file(content):
 
 # 1) 파일 업로드
 uploaded = st.file_uploader(
-    "CSV 파일 업로드 (여러 개 선택 가능)", 
+    "CSV 파일을 업로드하세요 (여러 개 가능)", 
     type='csv', accept_multiple_files=True
 )
 
 if uploaded:
-    # 업로드된 파일 목록 텍스트로 표시
-    st.subheader("업로드된 파일:")
-    for f in uploaded:
-        st.write("-", f.name)
+    # 2) 첫 번째 파일 5행 미리보기
+    st.subheader("첫 번째 파일 5행 미리보기")
+    first = uploaded[0]
+    try:
+        delim = detect_delimiter(first.read())
+        for enc in ('utf-8','cp949','utf-8-sig'):
+            try:
+                preview = pd.read_csv(io.BytesIO(first.read()),
+                                      encoding=enc, delimiter=delim,
+                                      nrows=5)
+                preview.columns = preview.columns.str.strip().str.replace('"','').str.replace('?','')
+                st.dataframe(preview)
+                break
+            except:
+                continue
+    except Exception:
+        st.write("미리보기 불가: 인코딩 또는 구분자 확인 필요")
     
-    # 2) 병합 전 미리보기 (상위 5행)
-    st.subheader("병합 후 미리보기 (상위 5행)")
-    # 통합 처리 + 미리보기 진행률 표시
-    progress = st.progress(0)
-    dfs_preview = []
-    for i, f in enumerate(uploaded, start=1):
-        dfs_preview.append(process_file(f.read()))
-        progress.progress(i / len(uploaded))
-    merged_preview = pd.concat(dfs_preview, ignore_index=True).drop_duplicates()
-    merged_preview['DATE'] = pd.Categorical(merged_preview['DATE'])
-    merged_preview = merged_preview.sort_values(['DATE','TIME','CODE'])
-    st.dataframe(merged_preview.head(5))
-
     st.markdown("---")
     # 3) 전체 실행 버튼
     if st.button("전체 실행"):
         st.subheader("전체 병합 진행")
         n = len(uploaded)
-        progress_all = st.progress(0)
+        progress = st.progress(0)
         dfs, errors = [], []
         for i, f in enumerate(uploaded, start=1):
             try:
                 df2 = process_file(f.read())
                 dfs.append(df2)
+                st.write(f"✓ {f.name} 처리 완료 ({len(df2):,}행)")
             except Exception as e:
                 errors.append(f"{f.name}: {e}")
-            progress_all.progress(i / n)
+                st.write(f"✗ {f.name} 오류: {e}")
+            progress.progress(i / n)
         if dfs:
             merged = pd.concat(dfs, ignore_index=True).drop_duplicates()
             merged['DATE'] = pd.Categorical(merged['DATE'])
@@ -103,6 +104,6 @@ if uploaded:
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
         if errors:
-            st.error("다음 오류가 발생했습니다:")
+            st.error("오류 발생:")
             for e in errors:
                 st.write("-", e)
