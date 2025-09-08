@@ -1,4 +1,3 @@
-# app.py
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -6,219 +5,176 @@ from io import BytesIO
 from datetime import datetime
 import io
 
-st.set_page_config(page_title="생활인구 데이터 병합", layout="wide")
-st.title("생활인구 CSV 병합 웹앱 (외국인/국내인구 자동 구분)")
+st.set_page_config(page_title="대용량 생활인구 데이터 병합", layout="wide")
+st.title("대용량 CSV 병합 (청크 처리)")
 
 def detect_delimiter(sample_bytes):
     s = sample_bytes[:2048].decode('utf-8', errors='ignore')
     return '\t' if s.count('\t') > s.count(',') else ','
 
-def process_foreigner_file(content_bytes, filename):
-    """외국인 파일 처리"""
+def process_file_chunks(content_bytes, filename, chunk_size=10000):
+    """청크 단위로 대용량 파일 처리"""
     delim = detect_delimiter(content_bytes)
-    df = None
+    
+    # 인코딩 감지
+    encoding = None
     for enc in ('utf-8', 'cp949', 'utf-8-sig'):
         try:
-            df = pd.read_csv(io.BytesIO(content_bytes), encoding=enc, delimiter=delim, low_memory=False, dtype=str)
+            pd.read_csv(io.BytesIO(content_bytes), encoding=enc, delimiter=delim, nrows=1)
+            encoding = enc
             break
-        except Exception:
+        except:
             continue
-    if df is None:
+    
+    if not encoding:
         raise ValueError(f"{filename}: 인코딩 실패")
     
-    df.columns = df.columns.str.strip().str.replace('"','').str.replace('?','')
-    required = ['기준일ID','시간대구분','집계구코드','총생활인구수','중국인체류인구수','중국외외국인체류인구수']
-    if not all(c in df.columns for c in required):
-        raise ValueError(f"{filename}: 필수 컬럼 누락")
-    
-    df = df[required].copy()
+    # 필터링 대상 코드
     target_codes = ['1104065', '1104066', '1104067', '1104068']
-    df['집계구코드_str'] = df['집계구코드'].astype(str)
-    filter_mask = df['집계구코드_str'].str[:7].isin(target_codes)
-    df = df[filter_mask].copy()
+    processed_chunks = []
     
-    if len(df) == 0:
+    # 청크 단위로 파일 읽기
+    chunk_reader = pd.read_csv(
+        io.BytesIO(content_bytes), 
+        encoding=encoding, 
+        delimiter=delim,
+        chunksize=chunk_size,
+        dtype=str,
+        low_memory=False
+    )
+    
+    chunk_count = 0
+    for chunk in chunk_reader:
+        chunk_count += 1
+        
+        # 컬럼 정리
+        chunk.columns = chunk.columns.str.strip().str.replace('"','').str.replace('?','')
+        
+        # 외국인 파일 처리
+        if 'FOREIGNER' in filename or 'TEMP_FOREIGNER' in filename:
+            required = ['기준일ID','시간대구분','집계구코드','총생활인구수','중국인체류인구수','중국외외국인체류인구수']
+            if all(c in chunk.columns for c in required):
+                chunk_filtered = process_foreigner_chunk(chunk, required, target_codes)
+                if len(chunk_filtered) > 0:
+                    processed_chunks.append(chunk_filtered)
+        
+        # 국내인구 파일 처리
+        elif 'LOCAL_PEOPLE' in filename:
+            basic_cols = ['기준일ID','시간대구분','행정동코드','집계구코드','총생활인구수']
+            male_cols = [f'남자{age}생활인구수' for age in ['0세부터9세','10세부터14세','15세부터19세','20세부터24세','25세부터29세','30세부터34세','35세부터39세','40세부터44세','45세부터49세','50세부터54세','55세부터59세','60세부터64세','65세부터69세','70세이상']]
+            female_cols = [f'여자{age}생활인구수' for age in ['0세부터9세','10세부터14세','15세부터19세','20세부터24세','25세부터29세','30세부터34세','35세부터39세','40세부터44세','45세부터49세','50세부터54세','55세부터59세','60세부터64세','65세부터69세','70세이상']]
+            
+            if all(c in chunk.columns for c in basic_cols + male_cols + female_cols):
+                chunk_filtered = process_local_chunk(chunk, basic_cols, male_cols, female_cols, target_codes)
+                if len(chunk_filtered) > 0:
+                    processed_chunks.append(chunk_filtered)
+        
+        # 진행 상황 표시
+        if chunk_count % 10 == 0:
+            st.write(f"  📊 청크 {chunk_count} 처리 중...")
+    
+    return processed_chunks
+
+def process_foreigner_chunk(chunk, required, target_codes):
+    chunk = chunk[required].copy()
+    chunk['집계구코드_str'] = chunk['집계구코드'].astype(str)
+    filter_mask = chunk['집계구코드_str'].str[:7].isin(target_codes)
+    chunk = chunk[filter_mask]
+    
+    if len(chunk) == 0:
         return pd.DataFrame()
     
-    df['DATE'] = pd.to_datetime(df['기준일ID'].astype(str), format='%Y%m%d', errors='coerce')
-    df['TIME'] = pd.to_numeric(df['시간대구분'], errors='coerce')
+    chunk['DATE'] = pd.to_datetime(chunk['기준일ID'].astype(str), format='%Y%m%d', errors='coerce')
+    chunk['TIME'] = pd.to_numeric(chunk['시간대구분'], errors='coerce')
     wmap = {0:'월요일',1:'화요일',2:'수요일',3:'목요일',4:'금요일',5:'토요일',6:'일요일'}
-    df['요일'] = df['DATE'].dt.dayofweek.map(wmap)
-    df['주중_or_주말'] = np.where(df['DATE'].dt.dayofweek >= 5, '주말', '주중')
-    df['CODE'] = df['집계구코드_str']
+    chunk['요일'] = chunk['DATE'].dt.dayofweek.map(wmap)
+    chunk['주중_or_주말'] = np.where(chunk['DATE'].dt.dayofweek >= 5, '주말', '주중')
     
     return pd.DataFrame({
-        'DATE': df['DATE'].dt.strftime('%Y-%m-%d'),
-        '요일': df['요일'],
-        '주중_or_주말': df['주중_or_주말'],
-        'TIME': df['TIME'],
-        'CODE': df['CODE'],
-        'ALL': pd.to_numeric(df['총생활인구수'], errors='coerce'),
-        'CHN': pd.to_numeric(df['중국인체류인구수'], errors='coerce'),
-        'EXP_CHN': pd.to_numeric(df['중국외외국인체류인구수'], errors='coerce')
+        'DATE': chunk['DATE'].dt.strftime('%Y-%m-%d'),
+        '요일': chunk['요일'],
+        '주중_or_주말': chunk['주중_or_주말'],
+        'TIME': chunk['TIME'],
+        'CODE': chunk['집계구코드_str'],
+        'ALL': pd.to_numeric(chunk['총생활인구수'], errors='coerce'),
+        'CHN': pd.to_numeric(chunk['중국인체류인구수'], errors='coerce'),
+        'EXP_CHN': pd.to_numeric(chunk['중국외외국인체류인구수'], errors='coerce')
     }).dropna(subset=['DATE','TIME','CODE'])
 
-def process_local_file(content_bytes, filename):
-    """국내인구 파일 처리"""
-    delim = detect_delimiter(content_bytes)
-    df = None
-    for enc in ('utf-8', 'cp949', 'utf-8-sig'):
-        try:
-            df = pd.read_csv(io.BytesIO(content_bytes), encoding=enc, delimiter=delim, low_memory=False, dtype=str)
-            break
-        except Exception:
-            continue
-    if df is None:
-        raise ValueError(f"{filename}: 인코딩 실패")
+def process_local_chunk(chunk, basic_cols, male_cols, female_cols, target_codes):
+    chunk = chunk[basic_cols + male_cols + female_cols].copy()
+    chunk['집계구코드_str'] = chunk['집계구코드'].astype(str)
+    filter_mask = chunk['집계구코드_str'].str[:7].isin(target_codes)
+    chunk = chunk[filter_mask]
     
-    df.columns = df.columns.str.strip().str.replace('"','').str.replace('?','')
-    
-    basic_cols = ['기준일ID','시간대구분','행정동코드','집계구코드','총생활인구수']
-    male_cols = [
-        '남자0세부터9세생활인구수','남자10세부터14세생활인구수','남자15세부터19세생활인구수',
-        '남자20세부터24세생활인구수','남자25세부터29세생활인구수','남자30세부터34세생활인구수',
-        '남자35세부터39세생활인구수','남자40세부터44세생활인구수','남자45세부터49세생활인구수',
-        '남자50세부터54세생활인구수','남자55세부터59세생활인구수','남자60세부터64세생활인구수',
-        '남자65세부터69세생활인구수','남자70세이상생활인구수'
-    ]
-    female_cols = [
-        '여자0세부터9세생활인구수','여자10세부터14세생활인구수','여자15세부터19세생활인구수',
-        '여자20세부터24세생활인구수','여자25세부터29세생활인구수','여자30세부터34세생활인구수',
-        '여자35세부터39세생활인구수','여자40세부터44세생활인구수','여자45세부터49세생활인구수',
-        '여자50세부터54세생활인구수','여자55세부터59세생활인구수','여자60세부터64세생활인구수',
-        '여자65세부터69세생활인구수','여자70세이상생활인구수'
-    ]
-    
-    required = basic_cols + male_cols + female_cols
-    if not all(c in df.columns for c in required):
-        raise ValueError(f"{filename}: 필수 컬럼 누락")
-    
-    df = df[required].copy()
-    target_codes = ['1104065', '1104066', '1104067', '1104068']
-    df['집계구코드_str'] = df['집계구코드'].astype(str)
-    filter_mask = df['집계구코드_str'].str[:7].isin(target_codes)
-    df = df[filter_mask].copy()
-    
-    if len(df) == 0:
+    if len(chunk) == 0:
         return pd.DataFrame()
     
-    df['DATE'] = pd.to_datetime(df['기준일ID'].astype(str), format='%Y%m%d', errors='coerce')
-    df['TIME'] = pd.to_numeric(df['시간대구분'], errors='coerce')
+    chunk['DATE'] = pd.to_datetime(chunk['기준일ID'].astype(str), format='%Y%m%d', errors='coerce')
+    chunk['TIME'] = pd.to_numeric(chunk['시간대구분'], errors='coerce')
     wmap = {0:'월요일',1:'화요일',2:'수요일',3:'목요일',4:'금요일',5:'토요일',6:'일요일'}
-    df['요일'] = df['DATE'].dt.dayofweek.map(wmap)
-    df['주중_or_주말'] = np.where(df['DATE'].dt.dayofweek >= 5, '주말', '주중')
-    df['CODE'] = df['집계구코드_str']
+    chunk['요일'] = chunk['DATE'].dt.dayofweek.map(wmap)
+    chunk['주중_or_주말'] = np.where(chunk['DATE'].dt.dayofweek >= 5, '주말', '주중')
     
     def to_numeric_safe(col):
-        return pd.to_numeric(df[col], errors='coerce').fillna(0)
+        return pd.to_numeric(chunk[col], errors='coerce').fillna(0)
     
     male_total = sum(to_numeric_safe(col) for col in male_cols)
     female_total = sum(to_numeric_safe(col) for col in female_cols)
     
     return pd.DataFrame({
-        'DATE': df['DATE'].dt.strftime('%Y-%m-%d'),
-        '요일': df['요일'],
-        '주중_or_주말': df['주중_or_주말'],
-        'TIME': df['TIME'],
-        'CODE': df['CODE'],
+        'DATE': chunk['DATE'].dt.strftime('%Y-%m-%d'),
+        '요일': chunk['요일'],
+        '주중_or_주말': chunk['주중_or_주말'],
+        'TIME': chunk['TIME'],
+        'CODE': chunk['집계구코드_str'],
         '남자': male_total,
-        '여자': female_total,
-        '남자 0-9': to_numeric_safe('남자0세부터9세생활인구수'),
-        '남자 10-19': to_numeric_safe('남자10세부터14세생활인구수') + to_numeric_safe('남자15세부터19세생활인구수'),
-        '남자 20-29': to_numeric_safe('남자20세부터24세생활인구수') + to_numeric_safe('남자25세부터29세생활인구수'),
-        '남자 30-39': to_numeric_safe('남자30세부터34세생활인구수') + to_numeric_safe('남자35세부터39세생활인구수'),
-        '남자 40-49': to_numeric_safe('남자40세부터44세생활인구수') + to_numeric_safe('남자45세부터49세생활인구수'),
-        '남자 50-59': to_numeric_safe('남자50세부터54세생활인구수') + to_numeric_safe('남자55세부터59세생활인구수'),
-        '남자 60-69': to_numeric_safe('남자60세부터64세생활인구수') + to_numeric_safe('남자65세부터69세생활인구수'),
-        '남자 70+': to_numeric_safe('남자70세이상생활인구수'),
-        '여자 0-9': to_numeric_safe('여자0세부터9세생활인구수'),
-        '여자 10-19': to_numeric_safe('여자10세부터14세생활인구수') + to_numeric_safe('여자15세부터19세생활인구수'),
-        '여자 20-29': to_numeric_safe('여자20세부터24세생활인구수') + to_numeric_safe('여자25세부터29세생활인구수'),
-        '여자 30-39': to_numeric_safe('여자30세부터34세생활인구수') + to_numeric_safe('여자35세부터39세생활인구수'),
-        '여자 40-49': to_numeric_safe('여자40세부터44세생활인구수') + to_numeric_safe('여자45세부터49세생활인구수'),
-        '여자 50-59': to_numeric_safe('여자50세부터54세생활인구수') + to_numeric_safe('여자55세부터59세생활인구수'),
-        '여자 60-69': to_numeric_safe('여자60세부터64세생활인구수') + to_numeric_safe('여자65세부터69세생활인구수'),
-        '여자 70+': to_numeric_safe('여자70세이상생활인구수')
+        '여자': female_total
     }).dropna(subset=['DATE','TIME','CODE'])
 
-st.info("📋 필터링 대상: CODE 앞 7자리가 1104065, 1104066, 1104067, 1104068인 데이터만 처리")
-st.info("🔄 파일명에 따라 자동 구분: TEMP_FOREIGNER → 외국인, LOCAL_PEOPLE → 국내인구")
+st.warning("⚠️ 대용량 파일 처리용 - 파일당 수십MB 이상도 처리 가능")
+st.info("📋 청크 크기: 10,000행씩 처리하여 메모리 사용량 최적화")
 
-uploaded = st.file_uploader("CSV 파일을 업로드하세요 (여러 개 가능)", type='csv', accept_multiple_files=True)
+uploaded = st.file_uploader("대용량 CSV 파일 업로드", type='csv', accept_multiple_files=True)
 
 if uploaded:
-    file_bytes = {f.name: f.read() for f in uploaded}
+    st.subheader(f"업로드된 파일: {len(uploaded)}개")
+    for f in uploaded:
+        file_size_mb = len(f.read()) / (1024 * 1024)
+        st.write(f"📄 {f.name} ({file_size_mb:.1f}MB)")
     
-    # 파일 분류
-    foreigner_files = [f for f in uploaded if 'TEMP_FOREIGNER' in f.name or 'FOREIGNER' in f.name]
-    local_files = [f for f in uploaded if 'LOCAL_PEOPLE' in f.name]
-    other_files = [f for f in uploaded if f not in foreigner_files + local_files]
-    
-    st.subheader("업로드된 파일 분류")
-    if foreigner_files:
-        st.write(f"🌍 외국인 파일: {len(foreigner_files)}개")
-    if local_files:
-        st.write(f"🏠 국내인구 파일: {len(local_files)}개")
-    if other_files:
-        st.write(f"❓ 기타 파일: {len(other_files)}개")
-    
-    # 미리보기
-    st.subheader("첫 번째 파일 미리보기")
-    first_file = uploaded[0]
-    sample = file_bytes[first_file.name]
-    delim = detect_delimiter(sample)
-    for enc in ('utf-8','cp949','utf-8-sig'):
-        try:
-            preview_df = pd.read_csv(io.BytesIO(sample), encoding=enc, delimiter=delim, nrows=5)
-            preview_df.columns = preview_df.columns.str.strip().str.replace('"','').str.replace('?','')
-            st.dataframe(preview_df)
-            break
-        except:
-            continue
-
-    st.markdown("---")
-
-    if st.button("전체 실행"):
-        progress = st.progress(0)
-        all_dfs, errors = [], []
+    if st.button("대용량 처리 시작"):
+        file_bytes = {f.name: f.read() for f in uploaded}
+        
+        all_chunks = []
         total_files = len(file_bytes)
+        progress = st.progress(0)
         
         for i, (fname, content) in enumerate(file_bytes.items(), start=1):
+            st.write(f"🔄 {fname} 처리 중...")
             try:
-                if 'LOCAL_PEOPLE' in fname:
-                    df = process_local_file(content, fname)
-                    file_type = "국내인구"
-                else:
-                    df = process_foreigner_file(content, fname)
-                    file_type = "외국인"
-                
-                if len(df) > 0:
-                    all_dfs.append(df)
-                    st.write(f"✓ {fname} ({file_type}) 처리 완료: {len(df):,}행")
-                else:
-                    st.write(f"○ {fname} ({file_type}) 처리 완료: 0행")
+                chunks = process_file_chunks(content, fname)
+                all_chunks.extend(chunks)
+                st.write(f"✅ {fname} 완료 - {len(chunks)}개 청크 처리됨")
             except Exception as e:
-                errors.append(f"{fname}: {e}")
-                st.write(f"✗ {fname} 오류: {e}")
+                st.error(f"❌ {fname} 실패: {e}")
             progress.progress(i / total_files)
-
-        if all_dfs:
-            merged = pd.concat(all_dfs, ignore_index=True).drop_duplicates()
-            merged['DATE'] = pd.Categorical(merged['DATE'])
-            merged = merged.sort_values(['DATE','TIME','CODE']).reset_index(drop=True)
-            st.success(f"✅ 통합 병합 완료: 총 {len(merged):,}행")
+        
+        if all_chunks:
+            st.write("🔄 최종 병합 중...")
+            final_df = pd.concat(all_chunks, ignore_index=True).drop_duplicates()
+            final_df = final_df.sort_values(['DATE','TIME','CODE']).reset_index(drop=True)
+            
+            st.success(f"🎉 완료! 총 {len(final_df):,}행 처리됨")
             
             bio = BytesIO()
-            merged.to_excel(bio, index=False, engine='openpyxl')
+            final_df.to_excel(bio, index=False, engine='openpyxl')
             bio.seek(0)
-            data_bytes = bio.getvalue()
-            fn = f"integrated_merged_{datetime.now():%Y%m%d_%H%M%S}.xlsx"
-            st.download_button("통합 엑셀 다운로드", data=data_bytes, file_name=fn,
-                               mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-        else:
-            st.warning("⚠️ 처리 가능한 데이터가 없습니다.")
-        
-        if errors:
-            st.error("오류 발생:")
-            for e in errors:
-                st.write("-", e)
+            fn = f"large_merged_{datetime.now():%Y%m%d_%H%M%S}.xlsx"
+            
+            st.download_button(
+                "📥 대용량 처리 결과 다운로드",
+                data=bio.getvalue(),
+                file_name=fn,
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
