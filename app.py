@@ -7,7 +7,7 @@ from datetime import datetime
 import io
 
 st.set_page_config(page_title="생활인구 CSV 병합 (지역 선택)", layout="wide")
-st.title("생활인구 CSV 병합 웹앱 (지역 선택 필터)")
+st.title("생활인구 CSV 병합 웹앱 (드롭다운 지역 선택)")
 
 # 지역 매칭 데이터
 region_data = """통계청행정동코드	시도명	시군구명	행정동명
@@ -155,44 +155,72 @@ def process_file(content_bytes, filename, selected_codes):
 # 지역 매핑 데이터 로드
 region_df = load_region_mapping()
 
-# 상단에 지역 선택 UI (가로 배치)
+# 드롭다운 지역 선택 UI
 st.header("📍 지역 선택")
 
-# 시군구별 그룹화
-districts = region_df.groupby('시군구')['행정동'].apply(list).to_dict()
+# 시군구 목록 가져오기
+districts = sorted(region_df['시군구'].unique())
+
+col1, col2 = st.columns([1, 2])
+
+with col1:
+    selected_district = st.selectbox(
+        "🏢 시군구 선택",
+        ["선택하세요..."] + districts
+    )
+
+# 선택된 구에 해당하는 동 목록
+available_dongs = []
+if selected_district != "선택하세요...":
+    available_dongs = sorted(region_df[region_df['시군구'] == selected_district]['행정동'].tolist())
+
+with col2:
+    if available_dongs:
+        selected_dongs = st.multiselect(
+            f"🏘️ {selected_district} 행정동 선택 (여러 개 선택 가능)",
+            available_dongs
+        )
+    else:
+        st.selectbox(
+            "🏘️ 행정동 선택",
+            ["먼저 시군구를 선택하세요..."],
+            disabled=True
+        )
+
+# 선택된 지역 처리
 selected_regions = []
+selected_codes = []
 
-for district, dongs in districts.items():
-    st.subheader(f"🏢 {district}")
-    
-    # 행정동을 4개씩 나누어 컬럼으로 배치
-    cols = st.columns(4)
-    for idx, dong in enumerate(dongs):
-        col_idx = idx % 4
-        with cols[col_idx]:
-            key = f"{district}_{dong}"
-            if st.checkbox(f"{dong}", key=key):
-                # 해당 행정동의 7자리 코드 찾기
-                code_7 = region_df[region_df['행정동'] == dong]['코드7자리'].iloc[0]
-                selected_regions.append({
-                    'district': district,
-                    'dong': dong,
-                    'code': code_7
-                })
-
-st.markdown("---")
+if selected_district != "선택하세요..." and 'selected_dongs' in locals() and selected_dongs:
+    for dong in selected_dongs:
+        code_7 = region_df[
+            (region_df['시군구'] == selected_district) & 
+            (region_df['행정동'] == dong)
+        ]['코드7자리'].iloc[0]
+        
+        selected_regions.append({
+            'district': selected_district,
+            'dong': dong,
+            'code': code_7
+        })
+        selected_codes.append(code_7)
 
 # 선택된 지역 표시
 if selected_regions:
     st.success(f"✅ 선택된 지역: {len(selected_regions)}개")
-    selected_codes = [r['code'] for r in selected_regions]
     
-    # 선택된 지역을 3컬럼으로 표시
-    selected_cols = st.columns(3)
+    # 선택된 지역을 4컬럼으로 표시
+    cols = st.columns(4)
     for idx, region in enumerate(selected_regions):
-        col_idx = idx % 3
-        with selected_cols[col_idx]:
-            st.write(f"• **{region['district']}** {region['dong']}")
+        col_idx = idx % 4
+        with cols[col_idx]:
+            st.write(f"📍 **{region['district']}** {region['dong']}")
+    
+    # 전체 선택/해제 버튼
+    col_btn1, col_btn2 = st.columns([1, 1])
+    with col_btn1:
+        if st.button("🔄 다른 구 선택하기"):
+            st.rerun()
     
     st.markdown("---")
     
@@ -272,5 +300,7 @@ if selected_regions:
                 for e in errors:
                     st.write("-", e)
 else:
-    st.warning("⚠️ 분석하고 싶은 지역을 위에서 선택해주세요.")
-    st.info("💡 여러 지역을 선택할 수 있습니다. 체크박스를 클릭하여 원하는 지역들을 선택하세요.")
+    st.info("💡 **사용 방법:**")
+    st.write("1. 🏢 시군구를 먼저 선택하세요")
+    st.write("2. 🏘️ 해당 구의 행정동을 선택하세요 (여러 개 선택 가능)")
+    st.write("3. 📁 CSV 파일을 업로드하고 분석을 실행하세요")
