@@ -155,34 +155,44 @@ def process_file(content_bytes, filename, selected_codes):
 # 지역 매핑 데이터 로드
 region_df = load_region_mapping()
 
-# 사이드바에 지역 선택 UI
-st.sidebar.header("📍 지역 선택")
+# 상단에 지역 선택 UI (가로 배치)
+st.header("📍 지역 선택")
 
 # 시군구별 그룹화
 districts = region_df.groupby('시군구')['행정동'].apply(list).to_dict()
-
 selected_regions = []
+
 for district, dongs in districts.items():
-    st.sidebar.subheader(f"{district}")
-    for dong in dongs:
-        key = f"{district}_{dong}"
-        if st.sidebar.checkbox(f"{dong}", key=key):
-            # 해당 행정동의 7자리 코드 찾기
-            code_7 = region_df[region_df['행정동'] == dong]['코드7자리'].iloc[0]
-            selected_regions.append({
-                'district': district,
-                'dong': dong,
-                'code': code_7
-            })
+    st.subheader(f"🏢 {district}")
+    
+    # 행정동을 4개씩 나누어 컬럼으로 배치
+    cols = st.columns(4)
+    for idx, dong in enumerate(dongs):
+        col_idx = idx % 4
+        with cols[col_idx]:
+            key = f"{district}_{dong}"
+            if st.checkbox(f"{dong}", key=key):
+                # 해당 행정동의 7자리 코드 찾기
+                code_7 = region_df[region_df['행정동'] == dong]['코드7자리'].iloc[0]
+                selected_regions.append({
+                    'district': district,
+                    'dong': dong,
+                    'code': code_7
+                })
+
+st.markdown("---")
 
 # 선택된 지역 표시
 if selected_regions:
-    st.info(f"📋 선택된 지역: {len(selected_regions)}개")
+    st.success(f"✅ 선택된 지역: {len(selected_regions)}개")
     selected_codes = [r['code'] for r in selected_regions]
     
-    # 선택된 지역 목록 표시
-    for region in selected_regions:
-        st.write(f"• {region['district']} {region['dong']} (코드: {region['code']})")
+    # 선택된 지역을 3컬럼으로 표시
+    selected_cols = st.columns(3)
+    for idx, region in enumerate(selected_regions):
+        col_idx = idx % 3
+        with selected_cols[col_idx]:
+            st.write(f"• **{region['district']}** {region['dong']}")
     
     st.markdown("---")
     
@@ -211,7 +221,7 @@ if selected_regions:
 
         st.markdown("---")
         
-        if st.button("선택된 지역으로 필터링 실행"):
+        if st.button("🚀 선택된 지역으로 필터링 실행"):
             progress = st.progress(0)
             dfs, errors = [], []
             total = len(files_dict)
@@ -233,7 +243,7 @@ if selected_regions:
                 merged = pd.concat(dfs, ignore_index=True).drop_duplicates()
                 merged['DATE'] = pd.Categorical(merged['DATE'])
                 merged = merged.sort_values(['DATE','TIME','CODE']).reset_index(drop=True)
-                st.success(f"✅ 병합 완료: 총 {len(merged):,}행")
+                st.success(f"🎉 병합 완료: 총 {len(merged):,}행")
                 
                 # 포함된 지역 코드 표시
                 unique_codes = merged['CODE'].str[:7].unique()
@@ -244,7 +254,7 @@ if selected_regions:
                         matched_regions.append(f"{matches.iloc[0]['시군구']} {matches.iloc[0]['행정동']}")
                 
                 if matched_regions:
-                    st.info(f"📊 포함된 지역: {', '.join(matched_regions)}")
+                    st.info(f"📊 최종 포함된 지역: {', '.join(matched_regions)}")
                 
                 bio = BytesIO()
                 merged.to_excel(bio, index=False, engine='openpyxl')
@@ -252,15 +262,15 @@ if selected_regions:
                 data = bio.getvalue()
                 fn = f"selected_regions_{datetime.now():%Y%m%d_%H%M%S}.xlsx"
                 st.download_button(
-                    "선택된 지역 엑셀 다운로드",
+                    "📥 선택된 지역 엑셀 다운로드",
                     data=data,
                     file_name=fn,
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 )
             if errors:
-                st.error("오류 발생:")
+                st.error("❌ 오류 발생:")
                 for e in errors:
                     st.write("-", e)
 else:
-    st.warning("⚠️ 왼쪽 사이드바에서 분석하고 싶은 지역을 선택해주세요.")
+    st.warning("⚠️ 분석하고 싶은 지역을 위에서 선택해주세요.")
     st.info("💡 여러 지역을 선택할 수 있습니다. 체크박스를 클릭하여 원하는 지역들을 선택하세요.")
