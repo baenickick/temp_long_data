@@ -116,12 +116,23 @@ if uploaded:
                 errs.append(str(e));st.write(f"✗{nm}:{e}")
             progress.progress(i/total)
         if dfs:
-            merged=pd.concat(dfs,ignore_index=True).drop_duplicates()
-            merged['DATE']=pd.Categorical(merged['DATE'])
-            merged=merged.sort_values(['DATE','TIME','CODE']).reset_index(drop=True)
-            st.success(f"완료:{len(merged):,}행")
-            bio=BytesIO();merged.to_excel(bio,index=False,engine='openpyxl');bio.seek(0)
-            data=bio.getvalue();fn=f"merged_{datetime.now():%Y%m%d_%H%M%S}.xlsx"
-            st.download_button("다운로드",data=data,file_name=fn,mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-        if errs:
-            st.error("오류:");[st.write("-",e) for e in errs]
+    merged = pd.concat(dfs, ignore_index=True).drop_duplicates()
+    merged['DATE'] = pd.Categorical(merged['DATE'])
+    merged = merged.sort_values(['DATE','TIME','CODE']).reset_index(drop=True)
+    st.success(f"완료: {len(merged):,}행")
+
+    # 📥 엑셀 생성 및 다운로드
+    bio = BytesIO()
+    # 엑셀로 쓰기
+    merged.to_excel(bio, index=False, engine='openpyxl')
+    # 버퍼 시작으로 이동
+    bio.seek(0)
+    data = bio.getvalue()   # 전체 바이트 추출
+
+    fn = f"merged_{datetime.now():%Y%m%d_%H%M%S}.xlsx"
+    st.download_button(
+        "다운로드",
+        data=data,
+        file_name=fn,
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
